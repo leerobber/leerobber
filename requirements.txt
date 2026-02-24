@@ -2,3 +2,6 @@ fastapi
 anthropic
 uvicorn
 pydantic
+python-multipart
+pytest
+httpx
