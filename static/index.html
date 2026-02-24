@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ContentAI Pro - AI-Powered Content Generation Platform</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="bg-gradient"></div>
+
+    <nav>
+        <div class="container">
+            <div class="logo">ContentAI Pro</div>
+            <div>
+                <a href="#features" class="nav-link">Features</a>
+                <a href="#demo" class="nav-link">Try Demo</a>
+                <a href="#pricing" class="nav-link">Pricing</a>
+                <a href="#contact" class="nav-link">Contact</a>
+            </div>
+        </div>
+    </nav>
+
+    <section class="hero">
+        <div class="badge">Powered by Multi-Agent AI Pipeline</div>
+        <h1>Create Professional Content in Seconds</h1>
+        <p>AI-powered content generation with research, writing, editing, and SEO optimization — all automated through a multi-agent pipeline.</p>
+    </section>
+
+    <section class="stats reveal">
+        <div class="stat-card">
+            <div class="stat-number">4</div>
+            <div class="stat-label">AI Agent Pipeline Stages</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">10K+</div>
+            <div class="stat-label">Articles Generated</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">95%</div>
+            <div class="stat-label">Customer Satisfaction</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">50+</div>
+            <div class="stat-label">Hours Saved Weekly</div>
+        </div>
+    </section>
+
+    <section class="features-section reveal" id="features">
+        <div class="section-header">
+            <h2>Multi-Agent Architecture</h2>
+            <p>Four specialized AI agents work together to create exceptional content</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">1</div>
+                <h3>Research Agent</h3>
+                <p>Gathers facts, statistics, and key insights about your topic to ensure authoritative, well-informed content.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">2</div>
+                <h3>Writer Agent</h3>
+                <p>Drafts engaging, professional content using research notes with compelling hooks and actionable insights.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">3</div>
+                <h3>Editor Agent</h3>
+                <p>Polishes grammar, style, and tone for clarity and readability while preserving the author's voice.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">4</div>
+                <h3>SEO Agent</h3>
+                <p>Optimizes content for search engines with natural keyword placement and proper heading hierarchy.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">SSE</div>
+                <h3>Real-Time Streaming</h3>
+                <p>Watch content generation in real-time with Server-Sent Events streaming each pipeline stage as it completes.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">RAG</div>
+                <h3>RAG-Ready Architecture</h3>
+                <p>Modular retrieval-augmented generation layer for enhanced content quality with hybrid vector + keyword search.</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="pipeline-section reveal">
+        <div class="section-header">
+            <h2>Content Pipeline</h2>
+            <p>Your content flows through four specialized AI agents</p>
+        </div>
+        <div class="pipeline-steps">
+            <div class="pipeline-step">
+                <div class="feature-icon">1</div>
+                <h3>Research</h3>
+                <p>Facts & context</p>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="feature-icon">2</div>
+                <h3>Write</h3>
+                <p>Draft content</p>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="feature-icon">3</div>
+                <h3>Edit</h3>
+                <p>Polish & refine</p>
+            </div>
+            <div class="pipeline-arrow">&rarr;</div>
+            <div class="pipeline-step">
+                <div class="feature-icon">4</div>
+                <h3>SEO</h3>
+                <p>Optimize ranking</p>
+            </div>
+        </div>
+    </section>
+
+    <section class="generator reveal" id="demo">
+        <div class="card">
+            <h2>Try It Now - Free Demo</h2>
+            <p>Generate your first AI article with our multi-agent pipeline</p>
+
+            <div class="demo-info">
+                <strong>Free Demo Active</strong><br>
+                <small>No signup required - 15 free generations included</small>
+            </div>
+
+            <div class="mode-toggle">
+                <button class="mode-btn active" data-mode="pipeline" onclick="setMode('pipeline')">
+                    Multi-Agent Pipeline
+                </button>
+                <button class="mode-btn" data-mode="quick" onclick="setMode('quick')">
+                    Quick Generation
+                </button>
+            </div>
+
+            <input type="text" id="topic" placeholder="Enter your topic (e.g., 'Benefits of Remote Work in 2025')" />
+            <input type="text" id="keywords" placeholder="Keywords (e.g., productivity, flexibility, work-life balance)" />
+            <button class="generate-btn" onclick="generate()">
+                Generate Professional Content
+            </button>
+
+            <div id="result"></div>
+        </div>
+    </section>
+
+    <section class="pricing-section reveal" id="pricing">
+        <div class="section-header">
+            <h2>Simple, Transparent Pricing</h2>
+            <p>Choose the plan that fits your needs</p>
+        </div>
+        <div class="pricing-grid">
+            <div class="price-card">
+                <div class="plan-name">Starter</div>
+                <div class="price">$29<span class="price-period">/mo</span></div>
+                <p class="price-description">Perfect for individuals</p>
+                <ul class="features-list">
+                    <li>50 AI articles per month</li>
+                    <li>Quick generation mode</li>
+                    <li>SEO optimization</li>
+                    <li>Blog & social posts</li>
+                    <li>Email support</li>
+                </ul>
+                <a href="#contact" class="price-cta">Get Started</a>
+            </div>
+
+            <div class="price-card featured">
+                <div class="popular-badge">MOST POPULAR</div>
+                <div class="plan-name">Professional</div>
+                <div class="price">$79<span class="price-period">/mo</span></div>
+                <p class="price-description">Best for businesses</p>
+                <ul class="features-list">
+                    <li>200 AI articles per month</li>
+                    <li>Multi-agent pipeline</li>
+                    <li>Advanced SEO tools</li>
+                    <li>SSE streaming</li>
+                    <li>API access included</li>
+                    <li>Priority support</li>
+                    <li>Custom templates</li>
+                </ul>
+                <a href="#contact" class="price-cta">Get Started</a>
+            </div>
+
+            <div class="price-card">
+                <div class="plan-name">Enterprise</div>
+                <div class="price">$199<span class="price-period">/mo</span></div>
+                <p class="price-description">For large teams</p>
+                <ul class="features-list">
+                    <li>Unlimited articles</li>
+                    <li>Full agent orchestration</li>
+                    <li>RAG integration</li>
+                    <li>Custom AI training</li>
+                    <li>White-label option</li>
+                    <li>Dedicated account manager</li>
+                    <li>24/7 premium support</li>
+                </ul>
+                <a href="#contact" class="price-cta">Contact Sales</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="contact-section reveal" id="contact">
+        <div class="contact-card">
+            <h2>Get In Touch</h2>
+            <p>Have questions? Want to upgrade? We're here to help!</p>
+
+            <form id="contactForm" onsubmit="submitContact(event)">
+                <div class="form-group">
+                    <label for="name">Full Name</label>
+                    <input type="text" id="name" name="name" placeholder="John Doe" required>
+                </div>
+                <div class="form-group">
+                    <label for="contactEmail">Email Address</label>
+                    <input type="email" id="contactEmail" name="email" placeholder="john@example.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="subject">Subject</label>
+                    <input type="text" id="subject" name="subject" placeholder="I'm interested in the Professional plan" required>
+                </div>
+                <div class="form-group">
+                    <label for="message">Message</label>
+                    <textarea id="message" name="message" placeholder="Tell us more about your needs..." required></textarea>
+                </div>
+                <button type="submit" class="generate-btn">Send Message</button>
+            </form>
+
+            <div id="contactSuccess" class="success-message">
+                Thank you! We'll get back to you within 24 hours.
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="footer-links">
+            <a href="#demo">Try Demo</a>
+            <a href="#features">Features</a>
+            <a href="#pricing">Pricing</a>
+            <a href="#contact">Contact</a>
+        </div>
+        <p style="margin-top: 20px;">&copy; 2025 ContentAI Pro. All rights reserved.</p>
+        <p style="margin-top: 10px; font-size: 0.9em;">Powered by Multi-Agent AI Pipeline | Built for creators, marketers, and entrepreneurs</p>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
