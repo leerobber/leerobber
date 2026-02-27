@@ -2,3 +2,29 @@ fastapi
 anthropic
 uvicorn
 pydantic
+
+# Deep learning
+torch
+transformers
+accelerate
+huggingface-hub
+tokenizers
+safetensors
+sentencepiece
+
+# NLP & evaluation
+datasets
+evaluate
+rouge-score
+nltk
+spacy
+
+# AI agent frameworks
+dspy-ai
+autogen-agentchat
+crewai
+
+# LLM orchestration
+langchain
+langchain-community
+langchain-core
