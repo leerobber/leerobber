@@ -1,17 +1,32 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import List
-from datetime import datetime
+from typing import List, Optional
+from contextlib import asynccontextmanager
+from collections import defaultdict
 import anthropic
-import nltk
-from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
+import json
+import time
 import os
 import uvicorn
 
-app = FastAPI()
+from database import get_db, init_db, User, Contact, GeneratedContent
+from auth import (
+    hash_password, verify_password, create_access_token,
+    get_optional_user, require_user,
+)
+from nlp_utils import extract_keywords, compute_quality_metrics
+from agents import autogen_refine, crew_generate, dspy_generate
+
+# ── Lifespan: initialise DB on startup ───────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,15 +36,22 @@ app.add_middleware(
 )
 
 API_KEY = os.environ.get("ANTHROPIC_KEY", "")
-if API_KEY:
-    client = anthropic.Anthropic(api_key=API_KEY)
-else:
-    client = None
+client = anthropic.Anthropic(api_key=API_KEY) if API_KEY else None
 
-users = {
-    "demo@test.com": {"password": "demo123", "credits": 15}
-}
-contacts = []
+# ── In-memory rate limiter (sliding window) ───────────────────────────────────
+
+_rate_store: dict = defaultdict(list)
+
+
+def _rate_limit(key: str, max_calls: int = 10, window: int = 60) -> None:
+    now = time.time()
+    calls = [t for t in _rate_store[key] if now - t < window]
+    if len(calls) >= max_calls:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 10 requests per minute.")
+    calls.append(now)
+    _rate_store[key] = calls
+
+# ── Content prompt templates ──────────────────────────────────────────────────
 
 CONTENT_PROMPTS = {
     "blog": """Write a professional, engaging, and valuable 700-word blog article about: {topic}
@@ -82,42 +104,17 @@ Requirements:
 - Clear call-to-action
 - Under 300 words total
 
-Focus on benefits over features, and create desire."""
+Focus on benefits over features, and create desire.""",
 }
 
+# ── Request / response models ─────────────────────────────────────────────────
 
-def extract_keywords_from_topic(topic: str) -> List[str]:
-    try:
-        nltk.download('stopwords', quiet=True)
-        nltk.download('punkt_tab', quiet=True)
-        stop_words = set(stopwords.words('english'))
-        tokens = word_tokenize(topic.lower())
-        return [w for w in tokens if w.isalpha() and w not in stop_words and len(w) > 3][:5]
-    except Exception:
-        return topic.split()[:5]
-
-
-def compute_quality_metrics(content: str) -> dict:
-    words = content.split()
-    paragraphs = [p for p in content.split('\n\n') if p.strip()]
-    sentences = len([s for s in content.replace('!', '.').replace('?', '.').split('.') if s.strip()])
-    word_count = len(words)
-    structure_score = min(20, len(paragraphs) * 5)
-    length_score = min(30, word_count // 20)
-    sentence_score = min(10, sentences // 5)
-    quality_score = min(100, 40 + length_score + structure_score + sentence_score)
-    return {
-        "word_count": word_count,
-        "paragraph_count": len(paragraphs),
-        "sentence_count": sentences,
-        "reading_time_minutes": max(1, round(word_count / 200)),
-        "quality_score": quality_score,
-    }
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 class ContentRequest(BaseModel):
-    email: str
-    password: str
     topic: str
     keywords: List[str] = []
     content_type: str = "blog"
@@ -128,6 +125,11 @@ class ContactRequest(BaseModel):
     email: str
     subject: str
     message: str
+
+
+class ScoreRequest(BaseModel):
+    content: str
+    reference: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def homepage():
@@ -654,10 +656,17 @@ async def homepage():
             </div>
             
             <input type="text" id="topic" placeholder="Enter your topic (e.g., 'Benefits of Remote Work in 2025')" />
-            <input type="text" id="keywords" placeholder="Keywords (e.g., productivity, flexibility, work-life balance)" />
-            <button onclick="generate()">
-                ✨ Generate Professional Content
-            </button>
+            <input type="text" id="keywords" placeholder="Keywords — leave blank for auto-extraction" />
+            <select id="content_type" style="width:100%;padding:16px;margin-bottom:15px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.2);border-radius:12px;color:#fff;font-size:16px;font-family:'Inter',sans-serif;cursor:pointer;">
+                <option value="blog">Blog Article (~700 words)</option>
+                <option value="social">Social Media Posts (Twitter + LinkedIn + Instagram)</option>
+                <option value="email">Marketing Email</option>
+                <option value="product">Product Description</option>
+            </select>
+            <div style="display:flex;gap:10px;margin-bottom:0;">
+                <button onclick="generate()" style="flex:1;">✨ Generate</button>
+                <button onclick="generateStream()" style="flex:1;background:linear-gradient(135deg,#10b981,#059669);box-shadow:0 10px 30px rgba(16,185,129,0.4);">⚡ Stream</button>
+            </div>
             
             <div id="result"></div>
         </div>
@@ -828,98 +837,141 @@ async def homepage():
     </footer>
     
     <script>
-        // Generate content function
+        // ── JWT helper ────────────────────────────────────────────────────
+        async function getToken() {
+            let token = sessionStorage.getItem('jwt_token');
+            if (token) return token;
+            const r = await fetch('/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email: 'demo@test.com', password: 'demo123'})
+            });
+            if (!r.ok) throw new Error('Login failed');
+            const d = await r.json();
+            sessionStorage.setItem('jwt_token', d.access_token);
+            return d.access_token;
+        }
+
+        function renderResult(data) {
+            const m = data.metrics || {};
+            const rouge = m.rouge || {};
+            const rougeStr = rouge.rougeL !== undefined
+                ? `<div style="font-size:0.8em;opacity:0.6;margin-top:6px;text-align:center;">
+                     ROUGE-1: ${rouge.rouge1} · ROUGE-2: ${rouge.rouge2} · ROUGE-L: ${rouge.rougeL}
+                   </div>` : '';
+            return `
+                <h3>✅ Content Generated Successfully!</h3>
+                <div class="content-output">${(data.content || '').replace(/\n/g, '<br>')}</div>
+                <div class="credits-info">
+                    <span>📊 Quality: ${m.quality_score ?? '—'}/100</span>
+                    <span>📝 ${m.word_count ?? '—'} words · ${m.reading_time_minutes ?? '—'} min read</span>
+                    <span>🎯 Credits: ${data.credits_remaining}</span>
+                </div>
+                ${rougeStr}
+                <div class="upgrade-cta">
+                    💎 Love it? Upgrade for unlimited! <a href="#pricing" style="color:#10b981;text-decoration:underline;">View Plans</a>
+                </div>`;
+        }
+
+        // ── Standard (buffered) generate ──────────────────────────────────
         async function generate() {
-            const topic = document.getElementById('topic').value;
-            const keywords = document.getElementById('keywords').value.split(',').map(k => k.trim());
+            const topic = document.getElementById('topic').value.trim();
+            const keywords = document.getElementById('keywords').value.split(',').map(k => k.trim()).filter(k => k);
+            const content_type = document.getElementById('content_type').value;
             const result = document.getElementById('result');
-            
-            if (!topic) {
-                alert('Please enter a topic!');
-                return;
-            }
-            
+            if (!topic) { alert('Please enter a topic!'); return; }
             result.style.display = 'block';
-            result.innerHTML = '<div class="loading"><div class="spinner"></div><p>AI is crafting your professional content...</p></div>';
-            
+            result.innerHTML = '<div class="loading"><div class="spinner"></div><p>AI is crafting your content...</p></div>';
             try {
+                const token = await getToken();
                 const response = await fetch('/generate', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        email: 'demo@test.com',
-                        password: 'demo123',
-                        topic: topic,
-                        keywords: keywords
-                    })
+                    headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`},
+                    body: JSON.stringify({topic, keywords, content_type})
                 });
-                
                 const data = await response.json();
-                
                 if (response.ok) {
-                    result.innerHTML = `
-                        <h3>✅ Content Generated Successfully!</h3>
-                        <div class="content-output">${data.content}</div>
-                        <div class="credits-info">
-                            <span>📊 Quality Score: Excellent</span>
-                            <span>🎯 Credits Remaining: ${data.credits_remaining}</span>
-                        </div>
-                        <div class="upgrade-cta">
-                            💎 Love it? Upgrade to unlimited for just $29/month! <a href="#pricing" style="color: #10b981; text-decoration: underline;">View Plans</a>
-                        </div>
-                    `;
+                    result.innerHTML = renderResult(data);
                 } else {
-                    result.innerHTML = `
-                        <h3 style="color: #ef4444;">⚠️ ${data.detail}</h3>
-                        <div class="upgrade-cta">
-                            Ready to upgrade? <a href="#pricing" style="color: #10b981; text-decoration: underline;">Choose a plan</a> and get unlimited access!
-                        </div>
-                    `;
+                    if (response.status === 401) sessionStorage.removeItem('jwt_token');
+                    result.innerHTML = `<h3 style="color:#ef4444;">⚠️ ${data.detail}</h3>
+                        <div class="upgrade-cta">Ready to upgrade? <a href="#pricing" style="color:#10b981;text-decoration:underline;">Choose a plan</a></div>`;
                 }
             } catch (error) {
-                result.innerHTML = `
-                    <h3 style="color: #ef4444;">⚠️ Connection Error</h3>
-                    <p>Please check your connection and try again.</p>
-                `;
+                result.innerHTML = '<h3 style="color:#ef4444;">⚠️ Connection Error</h3><p>Please try again.</p>';
             }
         }
-        
-        // Contact form submission
+
+        // ── Streaming generate (SSE) ──────────────────────────────────────
+        async function generateStream() {
+            const topic = document.getElementById('topic').value.trim();
+            const keywords = document.getElementById('keywords').value.split(',').map(k => k.trim()).filter(k => k);
+            const content_type = document.getElementById('content_type').value;
+            const result = document.getElementById('result');
+            if (!topic) { alert('Please enter a topic!'); return; }
+            result.style.display = 'block';
+            result.innerHTML = '<h3>⚡ Streaming...</h3><div class="content-output" id="stream-out" style="white-space:pre-wrap;"></div>';
+            try {
+                const token = await getToken();
+                const response = await fetch('/generate/stream', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`},
+                    body: JSON.stringify({topic, keywords, content_type})
+                });
+                if (!response.ok) {
+                    const d = await response.json();
+                    result.innerHTML = `<h3 style="color:#ef4444;">⚠️ ${d.detail}</h3>`;
+                    return;
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                const out = document.getElementById('stream-out');
+                let full = '';
+                while (true) {
+                    const {done, value} = await reader.read();
+                    if (done) break;
+                    for (const line of decoder.decode(value).split('\n')) {
+                        if (!line.startsWith('data: ')) continue;
+                        const payload = JSON.parse(line.slice(6));
+                        if (payload.text) { full += payload.text; out.textContent = full; }
+                        if (payload.done) {
+                            result.innerHTML += `<div class="upgrade-cta" style="margin-top:12px;">
+                                💎 Love it? Upgrade for unlimited! <a href="#pricing" style="color:#10b981;text-decoration:underline;">View Plans</a></div>`;
+                        }
+                    }
+                }
+            } catch (error) {
+                result.innerHTML = '<h3 style="color:#ef4444;">⚠️ Stream Error</h3><p>Please try again.</p>';
+            }
+        }
+
+        // ── Contact form ──────────────────────────────────────────────────
         async function submitContact(event) {
             event.preventDefault();
-            
             const form = document.getElementById('contactForm');
             const success = document.getElementById('contactSuccess');
             const button = form.querySelector('button');
-            
             button.textContent = '📤 Sending...';
             button.disabled = true;
-            
-            const formData = {
-                name: document.getElementById('name').value,
-                email: document.getElementById('email').value,
-                subject: document.getElementById('subject').value,
-                message: document.getElementById('message').value
-            };
-            
             try {
                 const response = await fetch('/contact', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(formData)
+                    body: JSON.stringify({
+                        name: document.getElementById('name').value,
+                        email: document.getElementById('email').value,
+                        subject: document.getElementById('subject').value,
+                        message: document.getElementById('message').value
+                    })
                 });
-                
                 if (response.ok) {
                     form.reset();
                     success.style.display = 'block';
-                    setTimeout(() => {
-                        success.style.display = 'none';
-                    }, 5000);
+                    setTimeout(() => { success.style.display = 'none'; }, 5000);
                 }
             } catch (error) {
                 alert('Error sending message. Please try again.');
             }
-            
             button.textContent = '📧 Send Message';
             button.disabled = false;
         }
@@ -977,64 +1029,308 @@ async def homepage():
 </html>
     """
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+@app.post("/login")
+async def login(request: LoginRequest, db=Depends(get_db)):
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {"access_token": create_access_token(user.email), "token_type": "bearer"}
+
+
+# ── Standard generation ───────────────────────────────────────────────────────
+
+def _build_prompt(topic: str, keywords: list, content_type: str) -> tuple[str, list]:
+    ct = content_type if content_type in CONTENT_PROMPTS else "blog"
+    kw = keywords if keywords else extract_keywords(topic)
+    return CONTENT_PROMPTS[ct].format(topic=topic, keywords=", ".join(kw)), kw, ct
+
+
+def _debit_user(db, email: str, content: str, ct: str, kw: list, metrics: dict, method: str) -> int:
+    user = db.query(User).filter(User.email == email).first()
+    if user.credits <= 0:
+        raise HTTPException(status_code=402, detail="No credits remaining. Upgrade to continue!")
+    user.credits -= 1
+    db.add(GeneratedContent(
+        user_email=email, topic=content[:120], content=content,
+        content_type=ct, keywords_used=kw, metrics=metrics,
+        generation_method=method,
+    ))
+    db.commit()
+    return user.credits
+
+
 @app.post("/generate")
-async def generate_content(request: ContentRequest):
+async def generate_content(
+    request: Request,
+    body: ContentRequest,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    _rate_limit(f"generate:{request.client.host}")
     if not client:
         raise HTTPException(status_code=500, detail="API key not configured")
 
-    user = users.get(request.email)
-    if not user or user["password"] != request.password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    db_user = db.query(User).filter(User.email == user_email).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if db_user.credits <= 0:
+        raise HTTPException(status_code=402, detail="No credits remaining. Upgrade to continue!")
 
-    if user["credits"] <= 0:
-        raise HTTPException(status_code=402, detail="No credits remaining. Upgrade to continue generating amazing content!")
-
-    content_type = request.content_type if request.content_type in CONTENT_PROMPTS else "blog"
-    keywords = request.keywords if request.keywords else extract_keywords_from_topic(request.topic)
-    prompt_template = CONTENT_PROMPTS[content_type]
-    prompt = prompt_template.format(topic=request.topic, keywords=", ".join(keywords))
-
+    prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
     try:
         message = client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
-
         content = message.content[0].text
-        users[request.email]["credits"] -= 1
         metrics = compute_quality_metrics(content)
-
-        return {
-            "content": content,
-            "credits_remaining": users[request.email]["credits"],
-            "content_type": content_type,
-            "keywords_used": keywords,
-            "metrics": metrics,
-        }
+        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "standard")
+        return {"content": content, "credits_remaining": remaining,
+                "content_type": ct, "keywords_used": kw, "metrics": metrics}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI generation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI generation error: {e}")
+
+
+# ── Streaming generation (SSE) ────────────────────────────────────────────────
+
+@app.post("/generate/stream")
+async def generate_stream(
+    request: Request,
+    body: ContentRequest,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    _rate_limit(f"stream:{request.client.host}")
+    if not client:
+        raise HTTPException(status_code=500, detail="API key not configured")
+
+    db_user = db.query(User).filter(User.email == user_email).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if db_user.credits <= 0:
+        raise HTTPException(status_code=402, detail="No credits remaining. Upgrade to continue!")
+
+    prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
+
+    async def event_stream():
+        full_content = []
+        try:
+            with client.messages.stream(
+                model="claude-sonnet-4-5-20250929",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for text in stream.text_stream:
+                    full_content.append(text)
+                    yield f"data: {json.dumps({'text': text})}\n\n"
+            content = "".join(full_content)
+            metrics = compute_quality_metrics(content)
+            _debit_user(db, user_email, content, ct, kw, metrics, "stream")
+            yield f"data: {json.dumps({'done': True, 'metrics': metrics})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── CrewAI multi-agent generation ─────────────────────────────────────────────
+
+@app.post("/generate/crew")
+async def generate_crew(
+    request: Request,
+    body: ContentRequest,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    _rate_limit(f"crew:{request.client.host}", max_calls=3)
+    if not client:
+        raise HTTPException(status_code=500, detail="API key not configured")
+
+    db_user = db.query(User).filter(User.email == user_email).first()
+    if not db_user or db_user.credits <= 0:
+        raise HTTPException(status_code=402, detail="No credits remaining.")
+
+    kw = body.keywords if body.keywords else extract_keywords(body.topic)
+    ct = body.content_type if body.content_type in CONTENT_PROMPTS else "blog"
+    try:
+        content = crew_generate(body.topic, kw, ct, API_KEY)
+        metrics = compute_quality_metrics(content)
+        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "crew")
+        return {"content": content, "credits_remaining": remaining,
+                "content_type": ct, "keywords_used": kw, "metrics": metrics,
+                "generation_method": "crew"}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CrewAI error: {e}")
+
+
+# ── DSPy generation ───────────────────────────────────────────────────────────
+
+@app.post("/generate/optimized")
+async def generate_dspy(
+    request: Request,
+    body: ContentRequest,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    _rate_limit(f"dspy:{request.client.host}")
+    if not client:
+        raise HTTPException(status_code=500, detail="API key not configured")
+
+    db_user = db.query(User).filter(User.email == user_email).first()
+    if not db_user or db_user.credits <= 0:
+        raise HTTPException(status_code=402, detail="No credits remaining.")
+
+    kw = body.keywords if body.keywords else extract_keywords(body.topic)
+    ct = body.content_type if body.content_type in CONTENT_PROMPTS else "blog"
+    try:
+        content = dspy_generate(body.topic, kw, ct, API_KEY)
+        metrics = compute_quality_metrics(content)
+        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "dspy")
+        return {"content": content, "credits_remaining": remaining,
+                "content_type": ct, "keywords_used": kw, "metrics": metrics,
+                "generation_method": "dspy"}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DSPy error: {e}")
+
+
+# ── AutoGen Writer + Critic refinement ───────────────────────────────────────
+
+@app.post("/generate/refine")
+async def generate_refine(
+    request: Request,
+    body: ContentRequest,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    _rate_limit(f"refine:{request.client.host}", max_calls=5)
+    if not client:
+        raise HTTPException(status_code=500, detail="API key not configured")
+
+    db_user = db.query(User).filter(User.email == user_email).first()
+    if not db_user or db_user.credits <= 0:
+        raise HTTPException(status_code=402, detail="No credits remaining.")
+
+    prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
+    try:
+        # Generate initial draft, then iteratively refine
+        draft = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        ).content[0].text
+        content = autogen_refine(draft, body.topic, client)
+        metrics = compute_quality_metrics(content)
+        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "refine")
+        return {"content": content, "credits_remaining": remaining,
+                "content_type": ct, "keywords_used": kw, "metrics": metrics,
+                "generation_method": "refine"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Refinement error: {e}")
+
+
+# ── ROUGE / quality scoring ───────────────────────────────────────────────────
+
+@app.post("/score")
+async def score_content(body: ScoreRequest):
+    from nlp_utils import compute_rouge
+    metrics = compute_quality_metrics(body.content)
+    if body.reference:
+        metrics["rouge"] = compute_rouge(body.content, body.reference)
+    return metrics
+
+
+# ── Generation history ────────────────────────────────────────────────────────
+
+@app.get("/history")
+async def get_history(
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+    limit: int = 20,
+):
+    rows = (
+        db.query(GeneratedContent)
+        .filter(GeneratedContent.user_email == user_email)
+        .order_by(GeneratedContent.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "topic": r.topic,
+            "content_type": r.content_type,
+            "generation_method": r.generation_method,
+            "metrics": r.metrics,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+# ── Content export ────────────────────────────────────────────────────────────
+
+@app.get("/export/{content_id}")
+async def export_content(
+    content_id: int,
+    format: str = "markdown",
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    row = db.query(GeneratedContent).filter(
+        GeneratedContent.id == content_id,
+        GeneratedContent.user_email == user_email,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    if format == "markdown":
+        md = f"# {row.topic}\n\n{row.content}\n\n---\n*Generated by ContentAI Pro · {row.content_type}*\n"
+        return StreamingResponse(
+            iter([md]),
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="content_{content_id}.md"'},
+        )
+    raise HTTPException(status_code=400, detail="Supported formats: markdown")
+
+
+# ── Contact ───────────────────────────────────────────────────────────────────
 
 @app.post("/contact")
-async def contact_form(request: ContactRequest):
-    contact = {
-        "name": request.name,
-        "email": request.email,
-        "subject": request.subject,
-        "message": request.message,
-        "timestamp": datetime.now().isoformat()
-    }
-    contacts.append(contact)
+async def contact_form(request: ContactRequest, db=Depends(get_db)):
+    db.add(Contact(
+        name=request.name,
+        email=request.email,
+        subject=request.subject,
+        message=request.message,
+    ))
+    db.commit()
     return {"status": "success", "message": "Contact form submitted successfully"}
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     return {
         "status": "live",
         "service": "ContentAI Pro",
-        "version": "2.0",
-        "features": ["content_generation", "seo_optimization", "multi_format"]
+        "version": "3.0",
+        "features": [
+            "content_generation", "streaming", "crew_ai", "dspy",
+            "autogen_refine", "jwt_auth", "sqlite_persistence",
+            "rouge_scoring", "spacy_keywords", "history", "export",
+        ],
     }
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))

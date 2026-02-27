@@ -2,6 +2,10 @@ fastapi
 anthropic
 uvicorn
 pydantic
+sqlalchemy
+python-jose[cryptography]
+passlib[bcrypt]
+langchain-anthropic
 
 # Deep learning
 torch
