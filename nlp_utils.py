@@ -116,6 +116,43 @@ def compute_rouge(generated: str, reference: Optional[str] = None) -> dict:
         return {}
 
 
+# ── Readability ───────────────────────────────────────────────────────────────
+
+def compute_readability(content: str) -> dict:
+    """
+    Returns Flesch Reading Ease, Flesch-Kincaid grade level, and a
+    human-readable grade label.  Falls back gracefully if textstat is absent.
+    """
+    try:
+        import textstat
+        ease  = round(textstat.flesch_reading_ease(content), 1)
+        grade = round(textstat.flesch_kincaid_grade(content), 1)
+        fog   = round(textstat.gunning_fog(content), 1)
+
+        # Map ease score → human label
+        if ease >= 90:
+            label = "Very Easy (5th grade)"
+        elif ease >= 70:
+            label = "Easy (6th–7th grade)"
+        elif ease >= 60:
+            label = "Standard (8th–9th grade)"
+        elif ease >= 50:
+            label = "Fairly Difficult (10th–12th grade)"
+        elif ease >= 30:
+            label = "Difficult (College level)"
+        else:
+            label = "Very Difficult (Professional)"
+
+        return {
+            "flesch_ease": ease,
+            "flesch_kincaid_grade": grade,
+            "gunning_fog": fog,
+            "reading_level": label,
+        }
+    except Exception:
+        return {}
+
+
 # ── Quality metrics ──────────────────────────────────────────────────────────
 
 def compute_quality_metrics(content: str) -> dict:
@@ -135,5 +172,6 @@ def compute_quality_metrics(content: str) -> dict:
         "sentence_count": sentences,
         "reading_time_minutes": max(1, round(word_count / 200)),
         "quality_score": quality_score,
+        "readability": compute_readability(content),
         "rouge": compute_rouge(content),
     }

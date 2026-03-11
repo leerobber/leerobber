@@ -48,6 +48,18 @@ class GeneratedContent(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class Template(Base):
+    __tablename__ = "templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_email = Column(String, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    topic = Column(String, nullable=False)
+    keywords = Column(JSON, default=list)
+    content_type = Column(String, default="blog")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 def get_db():
     db = SessionLocal()
     try:

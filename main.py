@@ -12,7 +12,7 @@ import os
 import io
 import uvicorn
 
-from database import get_db, init_db, User, Contact, GeneratedContent
+from database import get_db, init_db, User, Contact, GeneratedContent, Template
 from auth import (
     hash_password, verify_password, create_access_token,
     get_optional_user, require_user,
@@ -137,6 +137,14 @@ class ContactRequest(BaseModel):
 class ScoreRequest(BaseModel):
     content: str
     reference: Optional[str] = None
+
+
+class TemplateRequest(BaseModel):
+    name: str
+    topic: str
+    keywords: List[str] = []
+    content_type: str = "blog"
+
 
 @app.get("/", response_class=HTMLResponse)
 async def homepage():
@@ -448,6 +456,93 @@ async def homepage():
         .export-btn:hover { opacity: 0.85; }
         .export-md  { background: linear-gradient(135deg,#667eea,#764ba2); color:#fff; }
         .export-pdf { background: linear-gradient(135deg,#f59e0b,#ef4444); color:#fff; }
+
+        /* Readability badge */
+        .readability-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .readability-badge {
+            background: rgba(102,126,234,0.12);
+            border: 1px solid rgba(102,126,234,0.3);
+            color: #a5b4fc;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.78em;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        /* Templates panel */
+        .templates-panel {
+            margin-top: 18px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        .templates-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.04);
+            cursor: pointer;
+            user-select: none;
+            font-weight: 600;
+            font-size: 0.95em;
+        }
+        .templates-header:hover { background: rgba(255,255,255,0.07); }
+        .templates-body { padding: 14px 16px; display: none; }
+        .templates-body.open { display: block; }
+        .template-save-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+        .template-save-row input {
+            flex: 1;
+            padding: 9px 12px;
+            font-size: 0.9em;
+            margin-bottom: 0;
+        }
+        .template-save-btn {
+            padding: 9px 16px;
+            width: auto;
+            font-size: 0.85em;
+            font-weight: 700;
+            border-radius: 10px;
+            white-space: nowrap;
+        }
+        .template-list { display: flex; flex-direction: column; gap: 8px; }
+        .template-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .template-item:hover { background: rgba(102,126,234,0.12); }
+        .template-item-name { font-weight: 600; font-size: 0.9em; }
+        .template-item-meta { font-size: 0.78em; color: rgba(255,255,255,0.45); margin-top: 2px; }
+        .template-del {
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.3);
+            font-size: 1.1em;
+            cursor: pointer;
+            width: auto;
+            padding: 4px 6px;
+            box-shadow: none;
+            transition: color 0.2s;
+        }
+        .template-del:hover { color: #f87171; transform: none; box-shadow: none; }
+        .templates-empty { text-align: center; color: rgba(255,255,255,0.35); font-size: 0.88em; padding: 10px 0; }
 
         /* Auth modal */
         .modal-overlay {
@@ -763,7 +858,24 @@ async def homepage():
                 <button onclick="generate()" style="flex:1;">✨ Generate</button>
                 <button onclick="generateStream()" style="flex:1;background:linear-gradient(135deg,#10b981,#059669);box-shadow:0 10px 30px rgba(16,185,129,0.4);">⚡ Stream</button>
             </div>
-            
+
+            <!-- ── Templates panel ── -->
+            <div class="templates-panel" id="templatesPanel">
+                <div class="templates-header" onclick="toggleTemplates()">
+                    <span>📋 My Templates</span>
+                    <span id="templatesChevron">▼</span>
+                </div>
+                <div class="templates-body" id="templatesBody">
+                    <div class="template-save-row">
+                        <input type="text" id="templateName" placeholder="Template name…" />
+                        <button class="template-save-btn" onclick="saveTemplate()">💾 Save</button>
+                    </div>
+                    <div class="template-list" id="templateList">
+                        <div class="templates-empty">Sign in to save &amp; load templates</div>
+                    </div>
+                </div>
+            </div>
+
             <div id="result"></div>
         </div>
     </section>
@@ -1041,6 +1153,7 @@ async def homepage():
                 msgEl.className = 'modal-msg success';
                 msgEl.textContent = d.message || 'Success!';
                 updateNavAuth();
+                loadTemplates();
                 setTimeout(closeModal, 1200);
             } catch(e) {
                 msgEl.className = 'modal-msg error';
@@ -1061,10 +1174,18 @@ async def homepage():
         function renderResult(data) {
             const m = data.metrics || {};
             const rouge = m.rouge || {};
+            const rb    = m.readability || {};
             const rougeStr = rouge.rougeL !== undefined
                 ? `<div style="font-size:0.8em;opacity:0.6;margin-top:6px;text-align:center;">
                      ROUGE-1: ${rouge.rouge1} · ROUGE-2: ${rouge.rouge2} · ROUGE-L: ${rouge.rougeL}
                    </div>` : '';
+            const readStr = rb.reading_level ? `
+                <div class="readability-bar">
+                    <span class="readability-badge">📖 ${rb.reading_level}</span>
+                    <span class="readability-badge">FK Grade: ${rb.flesch_kincaid_grade}</span>
+                    <span class="readability-badge">Ease: ${rb.flesch_ease}/100</span>
+                    <span class="readability-badge">Fog: ${rb.gunning_fog}</span>
+                </div>` : '';
             _lastContentId = data.id || null;
             const exportRow = _lastContentId ? `
                 <div class="export-row">
@@ -1079,6 +1200,7 @@ async def homepage():
                     <span>📝 ${m.word_count ?? '—'} words · ${m.reading_time_minutes ?? '—'} min read</span>
                     <span>🎯 Credits: ${data.credits_remaining}</span>
                 </div>
+                ${readStr}
                 ${rougeStr}
                 ${exportRow}
                 <div class="upgrade-cta">
@@ -1108,6 +1230,91 @@ async def homepage():
             } catch(e) {
                 alert('Export error: ' + e.message);
             }
+        }
+
+        // ── Templates ─────────────────────────────────────────────────────
+        function toggleTemplates() {
+            const body     = document.getElementById('templatesBody');
+            const chevron  = document.getElementById('templatesChevron');
+            const isOpen   = body.classList.toggle('open');
+            chevron.textContent = isOpen ? '▲' : '▼';
+            if (isOpen) loadTemplates();
+        }
+
+        async function loadTemplates() {
+            const listEl = document.getElementById('templateList');
+            const email  = sessionStorage.getItem('user_email');
+            if (!email || email === 'demo@test.com') {
+                listEl.innerHTML = '<div class="templates-empty">Sign in to save &amp; load templates</div>';
+                return;
+            }
+            try {
+                const token = await getToken();
+                const r = await fetch('/templates', { headers: { 'Authorization': `Bearer ${token}` } });
+                const templates = await r.json();
+                if (!templates.length) {
+                    listEl.innerHTML = '<div class="templates-empty">No templates yet — generate content then save it as a template!</div>';
+                    return;
+                }
+                listEl.innerHTML = templates.map(t => `
+                    <div class="template-item" onclick="loadTemplate(${t.id})">
+                        <div>
+                            <div class="template-item-name">${_esc(t.name)}</div>
+                            <div class="template-item-meta">${_esc(t.content_type)} · ${_esc(t.topic.substring(0,50))}${t.topic.length>50?'…':''}</div>
+                        </div>
+                        <button class="template-del" title="Delete" onclick="deleteTemplate(event,${t.id})">🗑</button>
+                    </div>`).join('');
+            } catch(e) {
+                listEl.innerHTML = '<div class="templates-empty">Could not load templates</div>';
+            }
+        }
+
+        async function saveTemplate() {
+            const name = document.getElementById('templateName').value.trim();
+            const topic = document.getElementById('topic').value.trim();
+            if (!name) { alert('Give the template a name first!'); return; }
+            if (!topic) { alert('Enter a topic before saving a template!'); return; }
+            const keywords = document.getElementById('keywords').value.split(',').map(k=>k.trim()).filter(k=>k);
+            const content_type = document.getElementById('content_type').value;
+            try {
+                const token = await getToken();
+                const r = await fetch('/templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ name, topic, keywords, content_type })
+                });
+                if (!r.ok) { const d=await r.json(); alert(d.detail||'Save failed'); return; }
+                document.getElementById('templateName').value = '';
+                loadTemplates();
+            } catch(e) { alert('Error saving template: '+e.message); }
+        }
+
+        async function loadTemplate(id) {
+            try {
+                const token = await getToken();
+                const r = await fetch('/templates', { headers: { 'Authorization': `Bearer ${token}` } });
+                const templates = await r.json();
+                const t = templates.find(x => x.id === id);
+                if (!t) return;
+                document.getElementById('topic').value = t.topic;
+                document.getElementById('keywords').value = (t.keywords||[]).join(', ');
+                document.getElementById('content_type').value = t.content_type;
+                document.getElementById('topic').focus();
+            } catch(e) { alert('Error loading template'); }
+        }
+
+        async function deleteTemplate(e, id) {
+            e.stopPropagation();
+            if (!confirm('Delete this template?')) return;
+            try {
+                const token = await getToken();
+                await fetch(`/templates/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+                loadTemplates();
+            } catch(e) { alert('Error deleting template'); }
+        }
+
+        function _esc(str) {
+            return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
 
         // ── Standard (buffered) generate ──────────────────────────────────
@@ -1549,6 +1756,76 @@ async def get_history(
     ]
 
 
+# ── Content templates ─────────────────────────────────────────────────────────
+
+@app.post("/templates", status_code=201)
+async def save_template(
+    body: TemplateRequest,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Template name cannot be empty")
+    t = Template(
+        user_email=user_email,
+        name=body.name.strip(),
+        topic=body.topic,
+        keywords=body.keywords,
+        content_type=body.content_type,
+    )
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return {
+        "id": t.id,
+        "name": t.name,
+        "topic": t.topic,
+        "keywords": t.keywords,
+        "content_type": t.content_type,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+@app.get("/templates")
+async def list_templates(
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    rows = (
+        db.query(Template)
+        .filter(Template.user_email == user_email)
+        .order_by(Template.created_at.desc())
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "topic": r.topic,
+            "keywords": r.keywords,
+            "content_type": r.content_type,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.delete("/templates/{template_id}", status_code=204)
+async def delete_template(
+    template_id: int,
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    row = db.query(Template).filter(
+        Template.id == template_id,
+        Template.user_email == user_email,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Template not found")
+    db.delete(row)
+    db.commit()
+
+
 # ── Content export ────────────────────────────────────────────────────────────
 
 @app.get("/export/{content_id}")
@@ -1662,11 +1939,12 @@ async def health():
     return {
         "status": "live",
         "service": "ContentAI Pro",
-        "version": "3.0",
+        "version": "3.1",
         "features": [
             "content_generation", "streaming", "crew_ai", "dspy",
             "autogen_refine", "jwt_auth", "user_registration", "sqlite_persistence",
-            "rouge_scoring", "spacy_keywords", "history", "markdown_export", "pdf_export",
+            "rouge_scoring", "spacy_keywords", "readability_scoring", "content_templates",
+            "history", "markdown_export", "pdf_export",
         ],
     }
 
