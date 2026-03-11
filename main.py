@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional
 from contextlib import asynccontextmanager
@@ -9,6 +9,7 @@ import anthropic
 import json
 import time
 import os
+import io
 import uvicorn
 
 from database import get_db, init_db, User, Contact, GeneratedContent
@@ -112,6 +113,12 @@ Focus on benefits over features, and create desire.""",
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
 
 
 class ContentRequest(BaseModel):
@@ -421,7 +428,92 @@ async def homepage():
             color: #10b981;
             font-weight: 600;
         }
-        
+
+        /* Export / PDF row */
+        .export-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 14px;
+        }
+        .export-btn {
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9em;
+            transition: opacity 0.2s;
+        }
+        .export-btn:hover { opacity: 0.85; }
+        .export-md  { background: linear-gradient(135deg,#667eea,#764ba2); color:#fff; }
+        .export-pdf { background: linear-gradient(135deg,#f59e0b,#ef4444); color:#fff; }
+
+        /* Auth modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 999;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.open { display: flex; }
+        .modal-box {
+            background: #1a1a2e;
+            border: 1px solid rgba(102,126,234,0.4);
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+            position: relative;
+        }
+        .modal-box h2 { margin-bottom: 6px; font-size: 1.6em; }
+        .modal-box p  { color: rgba(255,255,255,0.6); margin-bottom: 24px; font-size: 0.95em; }
+        .modal-box input {
+            width: 100%;
+            padding: 13px 16px;
+            margin-bottom: 12px;
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            color: #fff;
+            font-size: 15px;
+            font-family: 'Inter', sans-serif;
+        }
+        .modal-box button.primary {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg,#667eea,#764ba2);
+            color: #fff;
+            font-size: 1em;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 4px;
+        }
+        .modal-close {
+            position: absolute;
+            top: 16px; right: 20px;
+            background: none;
+            border: none;
+            color: rgba(255,255,255,0.5);
+            font-size: 1.4em;
+            cursor: pointer;
+        }
+        .modal-toggle {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 0.9em;
+            color: rgba(255,255,255,0.6);
+        }
+        .modal-toggle a { color: #667eea; cursor: pointer; text-decoration: underline; }
+        .modal-msg { margin-top: 12px; font-size: 0.9em; text-align: center; min-height: 20px; }
+        .modal-msg.error { color: #f87171; }
+        .modal-msg.success { color: #10b981; }
+
         /* Pricing Section */
         .pricing {
             max-width: 1200px;
@@ -569,11 +661,15 @@ async def homepage():
     <div class="bg-gradient"></div>
     
     <nav>
-        <div class="cta-buttons">
-            <a href="#demo" class="btn-primary">Try Free Demo</a>
-            <a href="#video" class="btn-secondary">Watch Video</a>
+        <div class="container">
+            <span class="logo">ContentAI Pro</span>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span id="navUserInfo" style="font-size:0.85em;color:rgba(255,255,255,0.6);display:none;"></span>
+                <button id="navAuthBtn" onclick="openModal()" style="padding:8px 20px;border:none;border-radius:20px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-weight:700;cursor:pointer;font-size:0.9em;">Sign Up Free</button>
+                <a href="#demo" class="btn-primary" style="padding:8px 20px;border-radius:20px;font-size:0.9em;">Try Demo</a>
+            </div>
         </div>
-    </section>
+    </nav>
     
     <section class="video-section reveal" id="video">
         <div class="video-container">
@@ -815,6 +911,22 @@ async def homepage():
         </div>
     </section>
     
+    <!-- ── Auth Modal (Register / Login) ──────────────────────────────────── -->
+    <div class="modal-overlay" id="authModal">
+        <div class="modal-box">
+            <button class="modal-close" onclick="closeModal()">✕</button>
+            <h2 id="modalTitle">Create Account</h2>
+            <p id="modalSubtitle">Sign up for 15 free credits — no card required</p>
+            <input type="email" id="authEmail" placeholder="Email address" autocomplete="email" />
+            <input type="password" id="authPassword" placeholder="Password (min 6 chars)" autocomplete="new-password" />
+            <button class="primary" onclick="submitAuth()">Get Started Free</button>
+            <div class="modal-msg" id="modalMsg"></div>
+            <div class="modal-toggle">
+                Already have an account? <a onclick="toggleAuthMode()">Sign in</a>
+            </div>
+        </div>
+    </div>
+
     <footer>
         <div class="footer-links">
             <a href="#demo">Try Demo</a>
@@ -837,10 +949,14 @@ async def homepage():
     </footer>
     
     <script>
-        // ── JWT helper ────────────────────────────────────────────────────
+        // ── JWT + auth state ──────────────────────────────────────────────
+        let _authMode = 'register'; // 'register' | 'login'
+        let _lastContentId = null;
+
         async function getToken() {
             let token = sessionStorage.getItem('jwt_token');
             if (token) return token;
+            // Fall back to demo account so unauthenticated visitors can still try
             const r = await fetch('/login', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -849,9 +965,99 @@ async def homepage():
             if (!r.ok) throw new Error('Login failed');
             const d = await r.json();
             sessionStorage.setItem('jwt_token', d.access_token);
+            sessionStorage.setItem('user_email', 'demo@test.com');
             return d.access_token;
         }
 
+        function updateNavAuth() {
+            const email = sessionStorage.getItem('user_email');
+            const btn = document.getElementById('navAuthBtn');
+            const info = document.getElementById('navUserInfo');
+            if (email && email !== 'demo@test.com') {
+                info.textContent = email;
+                info.style.display = 'inline';
+                btn.textContent = 'Sign Out';
+                btn.onclick = signOut;
+            } else {
+                info.style.display = 'none';
+                btn.textContent = 'Sign Up Free';
+                btn.onclick = openModal;
+            }
+        }
+
+        function signOut() {
+            sessionStorage.removeItem('jwt_token');
+            sessionStorage.removeItem('user_email');
+            updateNavAuth();
+        }
+
+        // ── Auth modal ────────────────────────────────────────────────────
+        function openModal(mode) {
+            _authMode = mode || 'register';
+            _setModalMode(_authMode);
+            document.getElementById('authModal').classList.add('open');
+            document.getElementById('authEmail').focus();
+        }
+        function closeModal() {
+            document.getElementById('authModal').classList.remove('open');
+            document.getElementById('modalMsg').textContent = '';
+        }
+        function toggleAuthMode() {
+            _authMode = _authMode === 'register' ? 'login' : 'register';
+            _setModalMode(_authMode);
+        }
+        function _setModalMode(mode) {
+            const isReg = mode === 'register';
+            document.getElementById('modalTitle').textContent    = isReg ? 'Create Account' : 'Welcome Back';
+            document.getElementById('modalSubtitle').textContent = isReg ? 'Sign up for 15 free credits — no card required' : 'Sign in to your account';
+            document.querySelector('.modal-box .primary').textContent = isReg ? 'Get Started Free' : 'Sign In';
+            document.querySelector('.modal-toggle').innerHTML = isReg
+                ? 'Already have an account? <a onclick="toggleAuthMode()">Sign in</a>'
+                : "Don't have an account? <a onclick=\"toggleAuthMode()\">Sign up</a>";
+            document.getElementById('modalMsg').textContent = '';
+        }
+
+        async function submitAuth() {
+            const email    = document.getElementById('authEmail').value.trim();
+            const password = document.getElementById('authPassword').value;
+            const msgEl    = document.getElementById('modalMsg');
+            msgEl.className = 'modal-msg';
+            msgEl.textContent = _authMode === 'register' ? 'Creating account...' : 'Signing in...';
+            const url = _authMode === 'register' ? '/register' : '/login';
+            try {
+                const r = await fetch(url, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({email, password})
+                });
+                const d = await r.json();
+                if (!r.ok) {
+                    msgEl.className = 'modal-msg error';
+                    msgEl.textContent = d.detail || 'Something went wrong';
+                    return;
+                }
+                sessionStorage.setItem('jwt_token', d.access_token);
+                sessionStorage.setItem('user_email', d.email || email);
+                msgEl.className = 'modal-msg success';
+                msgEl.textContent = d.message || 'Success!';
+                updateNavAuth();
+                setTimeout(closeModal, 1200);
+            } catch(e) {
+                msgEl.className = 'modal-msg error';
+                msgEl.textContent = 'Network error — please try again';
+            }
+        }
+
+        // Close modal on overlay click
+        document.getElementById('authModal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+        // Enter key submits auth form
+        ['authEmail','authPassword'].forEach(id => {
+            document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') submitAuth(); });
+        });
+
+        // ── Render result + export buttons ────────────────────────────────
         function renderResult(data) {
             const m = data.metrics || {};
             const rouge = m.rouge || {};
@@ -859,6 +1065,12 @@ async def homepage():
                 ? `<div style="font-size:0.8em;opacity:0.6;margin-top:6px;text-align:center;">
                      ROUGE-1: ${rouge.rouge1} · ROUGE-2: ${rouge.rouge2} · ROUGE-L: ${rouge.rougeL}
                    </div>` : '';
+            _lastContentId = data.id || null;
+            const exportRow = _lastContentId ? `
+                <div class="export-row">
+                    <button class="export-btn export-md"  onclick="exportContent('markdown')">⬇ Download .md</button>
+                    <button class="export-btn export-pdf" onclick="exportContent('pdf')">📄 Download PDF</button>
+                </div>` : '';
             return `
                 <h3>✅ Content Generated Successfully!</h3>
                 <div class="content-output">${(data.content || '').replace(/\n/g, '<br>')}</div>
@@ -868,9 +1080,34 @@ async def homepage():
                     <span>🎯 Credits: ${data.credits_remaining}</span>
                 </div>
                 ${rougeStr}
+                ${exportRow}
                 <div class="upgrade-cta">
                     💎 Love it? Upgrade for unlimited! <a href="#pricing" style="color:#10b981;text-decoration:underline;">View Plans</a>
                 </div>`;
+        }
+
+        async function exportContent(format) {
+            if (!_lastContentId) { alert('No content ID available for export'); return; }
+            try {
+                const token = await getToken();
+                const r = await fetch(`/export/${_lastContentId}?format=${format}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!r.ok) {
+                    const d = await r.json();
+                    alert(d.detail || 'Export failed');
+                    return;
+                }
+                const blob = await r.blob();
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href     = url;
+                a.download = `content_${_lastContentId}.${format === 'pdf' ? 'pdf' : 'md'}`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch(e) {
+                alert('Export error: ' + e.message);
+            }
         }
 
         // ── Standard (buffered) generate ──────────────────────────────────
@@ -935,7 +1172,13 @@ async def homepage():
                         const payload = JSON.parse(line.slice(6));
                         if (payload.text) { full += payload.text; out.textContent = full; }
                         if (payload.done) {
-                            result.innerHTML += `<div class="upgrade-cta" style="margin-top:12px;">
+                            if (payload.id) _lastContentId = payload.id;
+                            const exportRow = payload.id
+                                ? `<div class="export-row">
+                                     <button class="export-btn export-md"  onclick="exportContent('markdown')">⬇ Download .md</button>
+                                     <button class="export-btn export-pdf" onclick="exportContent('pdf')">📄 Download PDF</button>
+                                   </div>` : '';
+                            result.innerHTML += exportRow + `<div class="upgrade-cta" style="margin-top:12px;">
                                 💎 Love it? Upgrade for unlimited! <a href="#pricing" style="color:#10b981;text-decoration:underline;">View Plans</a></div>`;
                         }
                     }
@@ -1024,6 +1267,7 @@ async def homepage():
         }
         
         createParticles();
+        updateNavAuth();
     </script>
 </body>
 </html>
@@ -1039,6 +1283,32 @@ async def login(request: LoginRequest, db=Depends(get_db)):
     return {"access_token": create_access_token(user.email), "token_type": "bearer"}
 
 
+@app.post("/register", status_code=201)
+async def register(request: RegisterRequest, db=Depends(get_db)):
+    if not request.email or "@" not in request.email:
+        raise HTTPException(status_code=422, detail="Invalid email address")
+    if len(request.password) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
+    existing = db.query(User).filter(User.email == request.email).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    new_user = User(
+        email=request.email,
+        password_hash=hash_password(request.password),
+        credits=15,
+    )
+    db.add(new_user)
+    db.commit()
+    token = create_access_token(new_user.email)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "email": new_user.email,
+        "credits": new_user.credits,
+        "message": "Account created! You have 15 free credits to get started.",
+    }
+
+
 # ── Standard generation ───────────────────────────────────────────────────────
 
 def _build_prompt(topic: str, keywords: list, content_type: str) -> tuple[str, list]:
@@ -1047,18 +1317,21 @@ def _build_prompt(topic: str, keywords: list, content_type: str) -> tuple[str, l
     return CONTENT_PROMPTS[ct].format(topic=topic, keywords=", ".join(kw)), kw, ct
 
 
-def _debit_user(db, email: str, content: str, ct: str, kw: list, metrics: dict, method: str) -> int:
+def _debit_user(db, email: str, content: str, ct: str, kw: list, metrics: dict, method: str) -> tuple:
+    """Returns (credits_remaining, content_id)."""
     user = db.query(User).filter(User.email == email).first()
     if user.credits <= 0:
         raise HTTPException(status_code=402, detail="No credits remaining. Upgrade to continue!")
     user.credits -= 1
-    db.add(GeneratedContent(
+    row = GeneratedContent(
         user_email=email, topic=content[:120], content=content,
         content_type=ct, keywords_used=kw, metrics=metrics,
         generation_method=method,
-    ))
+    )
+    db.add(row)
     db.commit()
-    return user.credits
+    db.refresh(row)
+    return user.credits, row.id
 
 
 @app.post("/generate")
@@ -1087,8 +1360,8 @@ async def generate_content(
         )
         content = message.content[0].text
         metrics = compute_quality_metrics(content)
-        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "standard")
-        return {"content": content, "credits_remaining": remaining,
+        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "standard")
+        return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics}
     except HTTPException:
         raise
@@ -1130,8 +1403,8 @@ async def generate_stream(
                     yield f"data: {json.dumps({'text': text})}\n\n"
             content = "".join(full_content)
             metrics = compute_quality_metrics(content)
-            _debit_user(db, user_email, content, ct, kw, metrics, "stream")
-            yield f"data: {json.dumps({'done': True, 'metrics': metrics})}\n\n"
+            _, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "stream")
+            yield f"data: {json.dumps({'done': True, 'metrics': metrics, 'id': content_id})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
@@ -1160,8 +1433,8 @@ async def generate_crew(
     try:
         content = crew_generate(body.topic, kw, ct, API_KEY)
         metrics = compute_quality_metrics(content)
-        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "crew")
-        return {"content": content, "credits_remaining": remaining,
+        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "crew")
+        return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics,
                 "generation_method": "crew"}
     except RuntimeError as e:
@@ -1192,8 +1465,8 @@ async def generate_dspy(
     try:
         content = dspy_generate(body.topic, kw, ct, API_KEY)
         metrics = compute_quality_metrics(content)
-        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "dspy")
-        return {"content": content, "credits_remaining": remaining,
+        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "dspy")
+        return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics,
                 "generation_method": "dspy"}
     except RuntimeError as e:
@@ -1229,8 +1502,8 @@ async def generate_refine(
         ).content[0].text
         content = autogen_refine(draft, body.topic, client)
         metrics = compute_quality_metrics(content)
-        remaining = _debit_user(db, user_email, content, ct, kw, metrics, "refine")
-        return {"content": content, "credits_remaining": remaining,
+        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "refine")
+        return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics,
                 "generation_method": "refine"}
     except Exception as e:
@@ -1299,7 +1572,73 @@ async def export_content(
             media_type="text/markdown",
             headers={"Content-Disposition": f'attachment; filename="content_{content_id}.md"'},
         )
-    raise HTTPException(status_code=400, detail="Supported formats: markdown")
+
+    if format == "pdf":
+        try:
+            from weasyprint import HTML as WeasyprintHTML
+        except ImportError:
+            raise HTTPException(status_code=500, detail="PDF export requires weasyprint. Run: pip install weasyprint")
+
+        content_html = row.content.replace("\n", "<br>")
+        html_source = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {{
+    font-family: 'Georgia', serif;
+    max-width: 750px;
+    margin: 60px auto;
+    color: #1a1a1a;
+    line-height: 1.8;
+    font-size: 15px;
+  }}
+  h1 {{
+    font-size: 2em;
+    color: #667eea;
+    border-bottom: 3px solid #667eea;
+    padding-bottom: 12px;
+    margin-bottom: 24px;
+  }}
+  .meta {{
+    font-size: 0.85em;
+    color: #888;
+    margin-bottom: 30px;
+    padding: 10px 16px;
+    background: #f9f9f9;
+    border-left: 4px solid #764ba2;
+    border-radius: 4px;
+  }}
+  .content {{ margin-top: 20px; }}
+  .footer {{
+    margin-top: 50px;
+    padding-top: 16px;
+    border-top: 1px solid #ddd;
+    font-size: 0.8em;
+    color: #aaa;
+    text-align: center;
+  }}
+</style>
+</head>
+<body>
+  <h1>{row.topic}</h1>
+  <div class="meta">
+    Type: {row.content_type.title()} &nbsp;|&nbsp;
+    Method: {row.generation_method} &nbsp;|&nbsp;
+    Generated: {row.created_at.strftime('%B %d, %Y') if row.created_at else 'N/A'}
+  </div>
+  <div class="content">{content_html}</div>
+  <div class="footer">Generated by ContentAI Pro · Powered by Claude</div>
+</body>
+</html>"""
+        pdf_bytes = WeasyprintHTML(string=html_source).write_pdf()
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="content_{content_id}.pdf"'},
+        )
+
+    raise HTTPException(status_code=400, detail="Supported formats: markdown, pdf")
 
 
 # ── Contact ───────────────────────────────────────────────────────────────────
@@ -1326,8 +1665,8 @@ async def health():
         "version": "3.0",
         "features": [
             "content_generation", "streaming", "crew_ai", "dspy",
-            "autogen_refine", "jwt_auth", "sqlite_persistence",
-            "rouge_scoring", "spacy_keywords", "history", "export",
+            "autogen_refine", "jwt_auth", "user_registration", "sqlite_persistence",
+            "rouge_scoring", "spacy_keywords", "history", "markdown_export", "pdf_export",
         ],
     }
 

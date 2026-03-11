@@ -6,6 +6,7 @@ sqlalchemy
 python-jose[cryptography]
 passlib[bcrypt]
 langchain-anthropic
+weasyprint
 
 # Deep learning
 torch
