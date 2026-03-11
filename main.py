@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from collections import defaultdict
+import asyncio
 import anthropic
 import json
 import time
@@ -51,6 +52,11 @@ def _rate_limit(key: str, max_calls: int = 10, window: int = 60) -> None:
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 10 requests per minute.")
     calls.append(now)
     _rate_store[key] = calls
+    # Evict idle keys to prevent unbounded memory growth
+    if len(_rate_store) > 10_000:
+        stale = [k for k, v in _rate_store.items() if not any(now - t < window for t in v)]
+        for k in stale:
+            del _rate_store[k]
 
 # ── Content prompt templates ──────────────────────────────────────────────────
 
@@ -164,7 +170,7 @@ async def homepage():
         }
         
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemKSystFont, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             background: #0a0a0a;
             color: #ffffff;
             line-height: 1.6;
@@ -1516,6 +1522,21 @@ async def register(request: RegisterRequest, db=Depends(get_db)):
     }
 
 
+@app.get("/me")
+async def get_me(
+    user_email: str = Depends(require_user),
+    db=Depends(get_db),
+):
+    user = db.query(User).filter(User.email == user_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "email": user.email,
+        "credits": user.credits,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
 # ── Standard generation ───────────────────────────────────────────────────────
 
 def _build_prompt(topic: str, keywords: list, content_type: str) -> tuple[str, list]:
@@ -1524,14 +1545,14 @@ def _build_prompt(topic: str, keywords: list, content_type: str) -> tuple[str, l
     return CONTENT_PROMPTS[ct].format(topic=topic, keywords=", ".join(kw)), kw, ct
 
 
-def _debit_user(db, email: str, content: str, ct: str, kw: list, metrics: dict, method: str) -> tuple:
+def _debit_user(db, email: str, topic: str, content: str, ct: str, kw: list, metrics: dict, method: str) -> tuple:
     """Returns (credits_remaining, content_id)."""
     user = db.query(User).filter(User.email == email).first()
     if user.credits <= 0:
         raise HTTPException(status_code=402, detail="No credits remaining. Upgrade to continue!")
     user.credits -= 1
     row = GeneratedContent(
-        user_email=email, topic=content[:120], content=content,
+        user_email=email, topic=topic, content=content,
         content_type=ct, keywords_used=kw, metrics=metrics,
         generation_method=method,
     )
@@ -1561,13 +1582,13 @@ async def generate_content(
     prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
         content = message.content[0].text
         metrics = compute_quality_metrics(content)
-        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "standard")
+        remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "standard")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics}
     except HTTPException:
@@ -1601,7 +1622,7 @@ async def generate_stream(
         full_content = []
         try:
             with client.messages.stream(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
@@ -1610,7 +1631,7 @@ async def generate_stream(
                     yield f"data: {json.dumps({'text': text})}\n\n"
             content = "".join(full_content)
             metrics = compute_quality_metrics(content)
-            _, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "stream")
+            _, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "stream")
             yield f"data: {json.dumps({'done': True, 'metrics': metrics, 'id': content_id})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -1638,9 +1659,10 @@ async def generate_crew(
     kw = body.keywords if body.keywords else extract_keywords(body.topic)
     ct = body.content_type if body.content_type in CONTENT_PROMPTS else "blog"
     try:
-        content = crew_generate(body.topic, kw, ct, API_KEY)
+        loop = asyncio.get_event_loop()
+        content = await loop.run_in_executor(None, crew_generate, body.topic, kw, ct, API_KEY)
         metrics = compute_quality_metrics(content)
-        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "crew")
+        remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "crew")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics,
                 "generation_method": "crew"}
@@ -1670,9 +1692,10 @@ async def generate_dspy(
     kw = body.keywords if body.keywords else extract_keywords(body.topic)
     ct = body.content_type if body.content_type in CONTENT_PROMPTS else "blog"
     try:
-        content = dspy_generate(body.topic, kw, ct, API_KEY)
+        loop = asyncio.get_event_loop()
+        content = await loop.run_in_executor(None, dspy_generate, body.topic, kw, ct, API_KEY)
         metrics = compute_quality_metrics(content)
-        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "dspy")
+        remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "dspy")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics,
                 "generation_method": "dspy"}
@@ -1703,13 +1726,14 @@ async def generate_refine(
     try:
         # Generate initial draft, then iteratively refine
         draft = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         ).content[0].text
-        content = autogen_refine(draft, body.topic, client)
+        loop = asyncio.get_event_loop()
+        content = await loop.run_in_executor(None, autogen_refine, draft, body.topic, client)
         metrics = compute_quality_metrics(content)
-        remaining, content_id = _debit_user(db, user_email, content, ct, kw, metrics, "refine")
+        remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "refine")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
                 "content_type": ct, "keywords_used": kw, "metrics": metrics,
                 "generation_method": "refine"}
@@ -1735,11 +1759,13 @@ async def get_history(
     user_email: str = Depends(require_user),
     db=Depends(get_db),
     limit: int = 20,
+    offset: int = 0,
 ):
     rows = (
         db.query(GeneratedContent)
         .filter(GeneratedContent.user_email == user_email)
         .order_by(GeneratedContent.created_at.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )
