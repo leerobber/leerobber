@@ -44,7 +44,7 @@ def autogen_refine(
 
     for _ in range(max_rounds):
         critic_reply = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=500,
             messages=messages,
         ).content[0].text
@@ -65,7 +65,7 @@ def autogen_refine(
         )
 
         writer_reply = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=2000,
             messages=messages,
         ).content[0].text
@@ -105,7 +105,7 @@ def crew_generate(
         raise RuntimeError(f"CrewAI/LangChain not available: {exc}") from exc
 
     llm = ChatAnthropic(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-6",
         anthropic_api_key=api_key,
         max_tokens=2000,
     )
@@ -189,7 +189,7 @@ def dspy_generate(
         raise RuntimeError(f"DSPy not available: {exc}") from exc
 
     lm = dspy.LM(
-        "anthropic/claude-sonnet-4-5-20250929",
+        "anthropic/claude-sonnet-4-6",
         api_key=api_key,
         max_tokens=2000,
     )
