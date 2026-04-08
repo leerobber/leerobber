@@ -630,7 +630,7 @@ async def homepage():
             <div class="feature-card">
                 <div class="feature-icon">🧠</div>
                 <h3>AI-Powered</h3>
-                <p>Powered by Claude Sonnet 4.5, the most advanced AI language model available.</p>
+                <p>Powered by Claude Sonnet 4.6, the most advanced AI language model available.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">📊</div>
@@ -833,7 +833,7 @@ async def homepage():
         </div>
         
         <p style="margin-top: 20px;">© 2025 ContentAI Pro. All rights reserved.</p>
-        <p style="margin-top: 10px; font-size: 0.9em;">Powered by Claude Sonnet 4.5 • Built for creators, marketers, and entrepreneurs</p>
+        <p style="margin-top: 10px; font-size: 0.9em;">Powered by Claude Sonnet 4.6 • Built for creators, marketers, and entrepreneurs</p>
     </footer>
     
     <script>
@@ -1081,7 +1081,7 @@ async def generate_content(
     prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1121,7 +1121,7 @@ async def generate_stream(
         full_content = []
         try:
             with client.messages.stream(
-                model="claude-sonnet-4-5-20250929",
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
@@ -1223,7 +1223,7 @@ async def generate_refine(
     try:
         # Generate initial draft, then iteratively refine
         draft = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         ).content[0].text
