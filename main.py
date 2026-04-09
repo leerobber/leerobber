@@ -6,7 +6,7 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 from collections import defaultdict
 import asyncio
-import anthropic
+from openai import OpenAI
 import json
 import time
 import os
@@ -37,8 +37,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.environ.get("ANTHROPIC_KEY", "")
-client = anthropic.Anthropic(api_key=API_KEY) if API_KEY else None
+# ── Ollama local LLM client (OpenAI-compatible) ───────────────────────────────
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+LLM_MODEL  = os.environ.get("LLM_MODEL", "llama3.2:3b")
+
+client = OpenAI(base_url=f"{OLLAMA_URL}/v1", api_key="ollama")
 
 # ── In-memory rate limiter (sliding window) ───────────────────────────────────
 
@@ -827,7 +830,7 @@ async def homepage():
             <div class="feature-card">
                 <div class="feature-icon">🧠</div>
                 <h3>AI-Powered</h3>
-                <p>Powered by Claude Sonnet 4.5, the most advanced AI language model available.</p>
+                <p>Powered by Llama (local), the most advanced AI language model available.</p>
             </div>
             <div class="feature-card">
                 <div class="feature-icon">📊</div>
@@ -1063,7 +1066,7 @@ async def homepage():
         </div>
         
         <p style="margin-top: 20px;">© 2025 ContentAI Pro. All rights reserved.</p>
-        <p style="margin-top: 10px; font-size: 0.9em;">Powered by Claude Sonnet 4.5 • Built for creators, marketers, and entrepreneurs</p>
+        <p style="margin-top: 10px; font-size: 0.9em;">Powered by Llama (local) • Built for creators, marketers, and entrepreneurs</p>
     </footer>
     
     <script>
@@ -1570,9 +1573,6 @@ async def generate_content(
     db=Depends(get_db),
 ):
     _rate_limit(f"generate:{request.client.host}")
-    if not client:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
     db_user = db.query(User).filter(User.email == user_email).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1581,12 +1581,12 @@ async def generate_content(
 
     prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
+        message = client.chat.completions.create(
+            model=LLM_MODEL,
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
-        content = message.content[0].text
+        content = message.choices[0].message.content
         metrics = compute_quality_metrics(content)
         remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "standard")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
@@ -1607,9 +1607,6 @@ async def generate_stream(
     db=Depends(get_db),
 ):
     _rate_limit(f"stream:{request.client.host}")
-    if not client:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
     db_user = db.query(User).filter(User.email == user_email).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1621,12 +1618,15 @@ async def generate_stream(
     async def event_stream():
         full_content = []
         try:
-            with client.messages.stream(
-                model="claude-sonnet-4-6",
+            stream = client.chat.completions.create(
+                model=LLM_MODEL,
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
-            ) as stream:
-                for text in stream.text_stream:
+                stream=True,
+            )
+            for chunk in stream:
+                text = chunk.choices[0].delta.content or ""
+                if text:
                     full_content.append(text)
                     yield f"data: {json.dumps({'text': text})}\n\n"
             content = "".join(full_content)
@@ -1649,9 +1649,6 @@ async def generate_crew(
     db=Depends(get_db),
 ):
     _rate_limit(f"crew:{request.client.host}", max_calls=3)
-    if not client:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
     db_user = db.query(User).filter(User.email == user_email).first()
     if not db_user or db_user.credits <= 0:
         raise HTTPException(status_code=402, detail="No credits remaining.")
@@ -1660,7 +1657,7 @@ async def generate_crew(
     ct = body.content_type if body.content_type in CONTENT_PROMPTS else "blog"
     try:
         loop = asyncio.get_event_loop()
-        content = await loop.run_in_executor(None, crew_generate, body.topic, kw, ct, API_KEY)
+        content = await loop.run_in_executor(None, crew_generate, body.topic, kw, ct, OLLAMA_URL, LLM_MODEL)
         metrics = compute_quality_metrics(content)
         remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "crew")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
@@ -1682,9 +1679,6 @@ async def generate_dspy(
     db=Depends(get_db),
 ):
     _rate_limit(f"dspy:{request.client.host}")
-    if not client:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
     db_user = db.query(User).filter(User.email == user_email).first()
     if not db_user or db_user.credits <= 0:
         raise HTTPException(status_code=402, detail="No credits remaining.")
@@ -1693,7 +1687,7 @@ async def generate_dspy(
     ct = body.content_type if body.content_type in CONTENT_PROMPTS else "blog"
     try:
         loop = asyncio.get_event_loop()
-        content = await loop.run_in_executor(None, dspy_generate, body.topic, kw, ct, API_KEY)
+        content = await loop.run_in_executor(None, dspy_generate, body.topic, kw, ct, OLLAMA_URL, LLM_MODEL)
         metrics = compute_quality_metrics(content)
         remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "dspy")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
@@ -1715,9 +1709,6 @@ async def generate_refine(
     db=Depends(get_db),
 ):
     _rate_limit(f"refine:{request.client.host}", max_calls=5)
-    if not client:
-        raise HTTPException(status_code=500, detail="API key not configured")
-
     db_user = db.query(User).filter(User.email == user_email).first()
     if not db_user or db_user.credits <= 0:
         raise HTTPException(status_code=402, detail="No credits remaining.")
@@ -1725,13 +1716,13 @@ async def generate_refine(
     prompt, kw, ct = _build_prompt(body.topic, body.keywords, body.content_type)
     try:
         # Generate initial draft, then iteratively refine
-        draft = client.messages.create(
-            model="claude-sonnet-4-6",
+        draft = client.chat.completions.create(
+            model=LLM_MODEL,
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
-        ).content[0].text
+        ).choices[0].message.content
         loop = asyncio.get_event_loop()
-        content = await loop.run_in_executor(None, autogen_refine, draft, body.topic, client)
+        content = await loop.run_in_executor(None, autogen_refine, draft, body.topic, client, LLM_MODEL)
         metrics = compute_quality_metrics(content)
         remaining, content_id = _debit_user(db, user_email, body.topic, content, ct, kw, metrics, "refine")
         return {"content": content, "credits_remaining": remaining, "id": content_id,
@@ -1965,7 +1956,7 @@ async def health():
     return {
         "status": "live",
         "service": "ContentAI Pro",
-        "version": "3.1",
+        "version": "4.0-local",
         "features": [
             "content_generation", "streaming", "crew_ai", "dspy",
             "autogen_refine", "jwt_auth", "user_registration", "sqlite_persistence",

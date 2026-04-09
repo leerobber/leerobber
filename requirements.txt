@@ -1,37 +1,27 @@
 fastapi
-anthropic
+openai
 uvicorn
 pydantic
 sqlalchemy
 python-jose[cryptography]
 passlib[bcrypt]
 bcrypt==4.0.1
-langchain-anthropic
 weasyprint
 textstat
 
-# Deep learning
-torch
-transformers
-accelerate
-huggingface-hub
-tokenizers
-safetensors
-sentencepiece
-
 # NLP & evaluation
-datasets
-evaluate
-rouge-score
 nltk
 spacy
+evaluate
+rouge-score
 
 # AI agent frameworks
 dspy-ai
-autogen-agentchat
 crewai
 
-# LLM orchestration
+# LLM orchestration (Ollama)
 langchain
 langchain-community
 langchain-core
+langchain-ollama
+ollama

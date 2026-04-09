@@ -1,8 +1,8 @@
-"""Multi-agent content generation backends.
+"""Multi-agent content generation backends — Ollama (local LLM) edition.
 
-Three strategies, all using the configured Anthropic client:
+Three strategies, all using the local Ollama server:
 
-  autogen_refine  — Writer + Critic iterative loop (Anthropic SDK directly)
+  autogen_refine  — Writer + Critic iterative loop (OpenAI-compatible SDK)
   crew_generate   — CrewAI Researcher → Writer → SEO Editor pipeline
   dspy_generate   — DSPy ChainOfThought optimised generation
 
@@ -11,7 +11,7 @@ callers should catch that and fall back to the standard generator.
 """
 
 from typing import List
-import anthropic
+from openai import OpenAI
 
 
 # ── AutoGen-style Writer + Critic refinement ─────────────────────────────────
@@ -19,15 +19,14 @@ import anthropic
 def autogen_refine(
     draft: str,
     topic: str,
-    client: anthropic.Anthropic,
+    client: OpenAI,
+    model: str = "llama3.2:3b",
     max_rounds: int = 2,
 ) -> str:
     """
-    Iterative Writer + Critic loop implemented directly with the Anthropic SDK.
-
-    The Critic reviews the draft; the Writer improves it based on the feedback.
-    Repeats up to max_rounds or until the Critic responds with APPROVED.
-    Returns the final polished content.
+    Iterative Writer + Critic loop using the Ollama OpenAI-compatible API.
+    The Critic reviews the draft; the Writer improves it based on feedback.
+    Repeats up to max_rounds or until Critic responds with APPROVED.
     """
     messages = [
         {
@@ -43,11 +42,11 @@ def autogen_refine(
     current = draft
 
     for _ in range(max_rounds):
-        critic_reply = client.messages.create(
-            model="claude-sonnet-4-6",
+        critic_reply = client.chat.completions.create(
+            model=model,
             max_tokens=500,
             messages=messages,
-        ).content[0].text
+        ).choices[0].message.content
 
         if "APPROVED" in critic_reply:
             break
@@ -64,11 +63,11 @@ def autogen_refine(
             }
         )
 
-        writer_reply = client.messages.create(
-            model="claude-sonnet-4-6",
+        writer_reply = client.chat.completions.create(
+            model=model,
             max_tokens=2000,
             messages=messages,
-        ).content[0].text
+        ).choices[0].message.content
 
         current = writer_reply
         messages.append({"role": "assistant", "content": writer_reply})
@@ -92,23 +91,20 @@ def crew_generate(
     topic: str,
     keywords: List[str],
     content_type: str,
-    api_key: str,
+    ollama_url: str = "http://localhost:11434",
+    model: str = "llama3.2:3b",
 ) -> str:
     """
-    Researcher → Writer → SEO Editor sequential CrewAI pipeline.
-    Raises RuntimeError if crewai or langchain_anthropic are not installed.
+    Researcher → Writer → SEO Editor sequential CrewAI pipeline using Ollama.
+    Raises RuntimeError if crewai or langchain_ollama are not installed.
     """
     try:
         from crewai import Agent, Task, Crew, Process
-        from langchain_anthropic import ChatAnthropic
+        from langchain_ollama import ChatOllama
     except ImportError as exc:
-        raise RuntimeError(f"CrewAI/LangChain not available: {exc}") from exc
+        raise RuntimeError(f"CrewAI/LangChain-Ollama not available: {exc}") from exc
 
-    llm = ChatAnthropic(
-        model="claude-sonnet-4-6",
-        anthropic_api_key=api_key,
-        max_tokens=2000,
-    )
+    llm = ChatOllama(model=model, base_url=ollama_url, num_predict=2000)
     kw_str = ", ".join(keywords)
 
     researcher = Agent(
@@ -177,10 +173,11 @@ def dspy_generate(
     topic: str,
     keywords: List[str],
     content_type: str,
-    api_key: str,
+    ollama_url: str = "http://localhost:11434",
+    model: str = "llama3.2:3b",
 ) -> str:
     """
-    Generates content using DSPy ChainOfThought reasoning.
+    Generates content using DSPy ChainOfThought reasoning via Ollama.
     Raises RuntimeError if dspy is not installed or misconfigured.
     """
     try:
@@ -189,8 +186,9 @@ def dspy_generate(
         raise RuntimeError(f"DSPy not available: {exc}") from exc
 
     lm = dspy.LM(
-        "anthropic/claude-sonnet-4-6",
-        api_key=api_key,
+        f"ollama_chat/{model}",
+        api_base=ollama_url,
+        api_key="ollama",
         max_tokens=2000,
     )
     dspy.configure(lm=lm)
