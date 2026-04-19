@@ -5,6 +5,7 @@ pydantic
 sqlalchemy
 python-jose[cryptography]
 passlib[bcrypt]
+requests
 langchain-anthropic
 
 # Deep learning

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -10,6 +10,7 @@ import json
 import time
 import os
 import uvicorn
+import requests as http_requests
 
 from database import get_db, init_db, User, Contact, GeneratedContent
 from auth import (
@@ -130,6 +131,10 @@ class ContactRequest(BaseModel):
 class ScoreRequest(BaseModel):
     content: str
     reference: Optional[str] = None
+
+
+class GitHubConnectRequest(BaseModel):
+    github_token: str
 
 @app.get("/", response_class=HTMLResponse)
 async def homepage():
@@ -1316,6 +1321,83 @@ async def contact_form(request: ContactRequest, db=Depends(get_db)):
     return {"status": "success", "message": "Contact form submitted successfully"}
 
 
+# ── GitHub connector ──────────────────────────────────────────────────────────
+
+GITHUB_API = "https://api.github.com"
+
+
+def _github_headers(token: str) -> dict:
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+@app.post("/github/connect")
+async def github_connect(
+    body: GitHubConnectRequest,
+    user_email: str = Depends(require_user),
+):
+    """Validate a GitHub token and return the authenticated GitHub user info."""
+    resp = http_requests.get(f"{GITHUB_API}/user", headers=_github_headers(body.github_token), timeout=10)
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="Invalid GitHub token — please check your Personal Access Token.")
+    if not resp.ok:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {resp.status_code}")
+    data = resp.json()
+    return {
+        "connected": True,
+        "github_login": data.get("login"),
+        "github_name": data.get("name"),
+        "avatar_url": data.get("avatar_url"),
+        "public_repos": data.get("public_repos"),
+        "private_repos": data.get("total_private_repos", 0),
+    }
+
+
+@app.get("/github/repos")
+async def github_repos(
+    user_email: str = Depends(require_user),
+    x_github_token: Optional[str] = Header(default=None),
+    per_page: int = 30,
+    sort: str = "updated",
+):
+    """List the authenticated user's GitHub repositories, sorted by last update."""
+    if not x_github_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing GitHub token — pass it as the 'X-Github-Token' request header.",
+        )
+    resp = http_requests.get(
+        f"{GITHUB_API}/user/repos",
+        headers=_github_headers(x_github_token),
+        params={"per_page": min(per_page, 100), "sort": sort, "affiliation": "owner,collaborator,organization_member"},
+        timeout=10,
+    )
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="Invalid or expired GitHub token.")
+    if not resp.ok:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {resp.status_code}")
+    repos = resp.json()
+    return [
+        {
+            "name": r["name"],
+            "full_name": r["full_name"],
+            "description": r.get("description"),
+            "private": r["private"],
+            "url": r["html_url"],
+            "stars": r["stargazers_count"],
+            "forks": r["forks_count"],
+            "open_issues": r["open_issues_count"],
+            "language": r.get("language"),
+            "updated_at": r["updated_at"],
+            "default_branch": r["default_branch"],
+        }
+        for r in repos
+    ]
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -1328,6 +1410,7 @@ async def health():
             "content_generation", "streaming", "crew_ai", "dspy",
             "autogen_refine", "jwt_auth", "sqlite_persistence",
             "rouge_scoring", "spacy_keywords", "history", "export",
+            "github_connector",
         ],
     }
 
