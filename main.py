@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -38,6 +38,8 @@ app.add_middleware(
 
 API_KEY = os.environ.get("ANTHROPIC_KEY", "")
 client = anthropic.Anthropic(api_key=API_KEY) if API_KEY else None
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 # ── In-memory rate limiter (sliding window) ───────────────────────────────────
 
@@ -132,9 +134,6 @@ class ScoreRequest(BaseModel):
     content: str
     reference: Optional[str] = None
 
-
-class GitHubConnectRequest(BaseModel):
-    github_token: str
 
 @app.get("/", response_class=HTMLResponse)
 async def homepage():
@@ -550,20 +549,118 @@ async def homepage():
             to { transform: rotate(360deg); }
         }
         
+        /* GitHub Repos Section */
+        .github-section {
+            max-width: 1200px;
+            margin: 60px auto;
+            padding: 0 20px;
+        }
+        .github-section .section-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .github-section .section-header h2 {
+            font-size: 2.2em;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff, #667eea);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .github-section .section-header p {
+            color: rgba(255,255,255,0.5);
+            margin-top: 8px;
+        }
+        .repos-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .repo-card {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 24px;
+            transition: all 0.25s;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .repo-card:hover {
+            border-color: #667eea;
+            transform: translateY(-3px);
+            box-shadow: 0 12px 40px rgba(102,126,234,0.25);
+        }
+        .repo-card a {
+            font-size: 1.1em;
+            font-weight: 700;
+            color: #a5b4fc;
+            text-decoration: none;
+        }
+        .repo-card a:hover { color: #667eea; }
+        .repo-desc {
+            font-size: 0.88em;
+            color: rgba(255,255,255,0.55);
+            line-height: 1.5;
+            flex: 1;
+        }
+        .repo-meta {
+            display: flex;
+            gap: 14px;
+            font-size: 0.82em;
+            color: rgba(255,255,255,0.45);
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .repo-meta span { display: flex; align-items: center; gap: 4px; }
+        .lang-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #667eea;
+            display: inline-block;
+        }
+        .repo-private {
+            font-size: 0.75em;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: rgba(251,191,36,0.15);
+            color: #fbbf24;
+            border: 1px solid rgba(251,191,36,0.3);
+        }
+        .repo-updated {
+            font-size: 0.78em;
+            color: rgba(255,255,255,0.3);
+        }
+        .github-token-notice {
+            text-align: center;
+            padding: 40px;
+            background: rgba(255,255,255,0.03);
+            border: 1px dashed rgba(255,255,255,0.15);
+            border-radius: 16px;
+            color: rgba(255,255,255,0.5);
+        }
+        .github-token-notice code {
+            background: rgba(102,126,234,0.2);
+            color: #a5b4fc;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.9em;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .hero h1 {
                 font-size: 2.2em;
             }
-            
+
             .hero p {
                 font-size: 1.1em;
             }
-            
+
             .card {
                 padding: 25px;
             }
-            
+
             .nav-link {
                 display: none;
             }
@@ -820,6 +917,20 @@ async def homepage():
         </div>
     </section>
     
+    <!-- ── GitHub Repos ─────────────────────────────────────────────────── -->
+    <section class="github-section reveal" id="github">
+        <div class="section-header">
+            <h2>My GitHub Repositories</h2>
+            <p>Live feed — sorted by last updated</p>
+        </div>
+        <div id="repos-container">
+            <div class="loading" style="text-align:center;padding:40px;">
+                <div class="spinner"></div>
+                <p style="margin-top:14px;color:rgba(255,255,255,0.4);">Loading repositories…</p>
+            </div>
+        </div>
+    </section>
+
     <footer>
         <div class="footer-links">
             <a href="#demo">Try Demo</a>
@@ -1029,6 +1140,67 @@ async def homepage():
         }
         
         createParticles();
+
+        // ── GitHub Repos ──────────────────────────────────────────────────
+        const LANG_COLORS = {
+            Python:'#3572A5', JavaScript:'#f1e05a', TypeScript:'#2b7489',
+            HTML:'#e34c26', CSS:'#563d7c', Java:'#b07219', Go:'#00ADD8',
+            Rust:'#dea584', Ruby:'#701516', Shell:'#89e051', Vue:'#41b883',
+        };
+        function timeAgo(iso) {
+            const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+            if (diff < 60) return diff + 's ago';
+            if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+            if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+            if (diff < 2592000) return Math.floor(diff/86400) + 'd ago';
+            return Math.floor(diff/2592000) + 'mo ago';
+        }
+        async function loadRepos() {
+            const container = document.getElementById('repos-container');
+            try {
+                const resp = await fetch('/github/repos');
+                const data = await resp.json();
+                if (data.error === 'GITHUB_TOKEN not configured') {
+                    container.innerHTML = `<div class="github-token-notice">
+                        <p style="font-size:1.1em;margin-bottom:12px;">GitHub not connected yet.</p>
+                        <p>Set your token once on the server:<br><br>
+                        <code>export GITHUB_TOKEN=ghp_your_token_here</code><br><br>
+                        Then restart the app — your repos will appear here automatically.</p>
+                    </div>`;
+                    return;
+                }
+                if (data.error) {
+                    container.innerHTML = `<div class="github-token-notice">
+                        <p style="color:#ef4444;">Could not load repos: ${data.error}</p></div>`;
+                    return;
+                }
+                if (!data.repos.length) {
+                    container.innerHTML = `<div class="github-token-notice"><p>No repositories found.</p></div>`;
+                    return;
+                }
+                const cards = data.repos.map(r => {
+                    const color = LANG_COLORS[r.language] || '#667eea';
+                    return `<div class="repo-card">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                            <a href="${r.url}" target="_blank" rel="noopener">${r.name}</a>
+                            ${r.private ? '<span class="repo-private">private</span>' : ''}
+                        </div>
+                        <p class="repo-desc">${r.description || '<em style="opacity:0.4">No description</em>'}</p>
+                        <div class="repo-meta">
+                            <span><span class="lang-dot" style="background:${color}"></span>${r.language}</span>
+                            <span>★ ${r.stars}</span>
+                            <span>⑂ ${r.forks}</span>
+                            ${r.open_issues ? `<span>● ${r.open_issues} open</span>` : ''}
+                        </div>
+                        <div class="repo-updated">Updated ${timeAgo(r.updated_at)}</div>
+                    </div>`;
+                }).join('');
+                container.innerHTML = `<div class="repos-grid">${cards}</div>`;
+            } catch(e) {
+                container.innerHTML = `<div class="github-token-notice"><p style="color:#ef4444;">Failed to fetch repos.</p></div>`;
+            }
+        }
+        loadRepos();
     </script>
 </body>
 </html>
@@ -1325,77 +1497,46 @@ async def contact_form(request: ContactRequest, db=Depends(get_db)):
 
 GITHUB_API = "https://api.github.com"
 
-
-def _github_headers(token: str) -> dict:
-    return {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-@app.post("/github/connect")
-async def github_connect(
-    body: GitHubConnectRequest,
-    user_email: str = Depends(require_user),
-):
-    """Validate a GitHub token and return the authenticated GitHub user info."""
-    resp = http_requests.get(f"{GITHUB_API}/user", headers=_github_headers(body.github_token), timeout=10)
-    if resp.status_code == 401:
-        raise HTTPException(status_code=401, detail="Invalid GitHub token — please check your Personal Access Token.")
-    if not resp.ok:
-        raise HTTPException(status_code=502, detail=f"GitHub API error: {resp.status_code}")
-    data = resp.json()
-    return {
-        "connected": True,
-        "github_login": data.get("login"),
-        "github_name": data.get("name"),
-        "avatar_url": data.get("avatar_url"),
-        "public_repos": data.get("public_repos"),
-        "private_repos": data.get("total_private_repos", 0),
-    }
+_GH_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
 
 
 @app.get("/github/repos")
-async def github_repos(
-    user_email: str = Depends(require_user),
-    x_github_token: Optional[str] = Header(default=None),
-    per_page: int = 30,
-    sort: str = "updated",
-):
-    """List the authenticated user's GitHub repositories, sorted by last update."""
-    if not x_github_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing GitHub token — pass it as the 'X-Github-Token' request header.",
+async def github_repos():
+    """Return the owner's repos using the server-side GITHUB_TOKEN env var."""
+    if not GITHUB_TOKEN:
+        return {"error": "GITHUB_TOKEN not configured", "repos": []}
+    headers = {**_GH_HEADERS, "Authorization": f"Bearer {GITHUB_TOKEN}"}
+    try:
+        resp = http_requests.get(
+            f"{GITHUB_API}/user/repos",
+            headers=headers,
+            params={"per_page": 100, "sort": "updated", "affiliation": "owner"},
+            timeout=10,
         )
-    resp = http_requests.get(
-        f"{GITHUB_API}/user/repos",
-        headers=_github_headers(x_github_token),
-        params={"per_page": min(per_page, 100), "sort": sort, "affiliation": "owner,collaborator,organization_member"},
-        timeout=10,
-    )
-    if resp.status_code == 401:
-        raise HTTPException(status_code=401, detail="Invalid or expired GitHub token.")
+    except Exception as e:
+        return {"error": str(e), "repos": []}
     if not resp.ok:
-        raise HTTPException(status_code=502, detail=f"GitHub API error: {resp.status_code}")
-    repos = resp.json()
-    return [
-        {
-            "name": r["name"],
-            "full_name": r["full_name"],
-            "description": r.get("description"),
-            "private": r["private"],
-            "url": r["html_url"],
-            "stars": r["stargazers_count"],
-            "forks": r["forks_count"],
-            "open_issues": r["open_issues_count"],
-            "language": r.get("language"),
-            "updated_at": r["updated_at"],
-            "default_branch": r["default_branch"],
-        }
-        for r in repos
-    ]
+        return {"error": f"GitHub returned {resp.status_code}", "repos": []}
+    return {
+        "error": None,
+        "repos": [
+            {
+                "name": r["name"],
+                "description": r.get("description") or "",
+                "url": r["html_url"],
+                "stars": r["stargazers_count"],
+                "forks": r["forks_count"],
+                "open_issues": r["open_issues_count"],
+                "language": r.get("language") or "—",
+                "private": r["private"],
+                "updated_at": r["updated_at"],
+            }
+            for r in resp.json()
+        ],
+    }
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
